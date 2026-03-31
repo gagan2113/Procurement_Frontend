@@ -1,23 +1,60 @@
 import { useState } from "react";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { StatusBadge } from "@/components/shared/StatusBadge";
-import { procurementRequests } from "@/lib/mock-data";
+import { usePurchaseRequestDetail, usePurchaseRequestList } from "@/hooks/use-purchase-requests";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Search } from "lucide-react";
+import { Search, Loader2, FileDown } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
+import { downloadPurchaseRequestPdf, getApiErrorMessage } from "@/lib/purchase-request-api";
 
 export default function RequestsPage() {
+  const { toast } = useToast();
+  const listQuery = usePurchaseRequestList({ skip: 0, limit: 50 });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [selected, setSelected] = useState<typeof procurementRequests[0] | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [downloadingRequestId, setDownloadingRequestId] = useState<string | null>(null);
+  const detailQuery = usePurchaseRequestDetail(selectedId);
 
-  const filtered = procurementRequests.filter(r => {
-    const matchSearch = r.item.toLowerCase().includes(search.toLowerCase()) || r.id.toLowerCase().includes(search.toLowerCase());
-    const matchStatus = statusFilter === "all" || r.status === statusFilter;
+  const requests = listQuery.data?.items ?? [];
+  const filtered = requests.filter((request) => {
+    const query = search.toLowerCase();
+    const matchSearch =
+      request.item_name.toLowerCase().includes(query) ||
+      request.id.toLowerCase().includes(query) ||
+      request.pr_number.toLowerCase().includes(query);
+    const matchStatus = statusFilter === "all" || request.status === statusFilter;
     return matchSearch && matchStatus;
   });
+
+  const handleDownloadPdf = async (requestId: string, prNumber: string) => {
+    setDownloadingRequestId(requestId);
+    try {
+      const { blob, filename } = await downloadPurchaseRequestPdf(requestId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename || `${prNumber}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      toast({ title: "PDF downloaded", description: `${prNumber} PDF has been downloaded.` });
+    } catch (error) {
+      toast({
+        title: "PDF download failed",
+        description: getApiErrorMessage(error),
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingRequestId(null);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -26,61 +63,129 @@ export default function RequestsPage() {
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search by ID or item..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+          <Input placeholder="Search by PR number, ID or item..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Status</SelectItem>
-            <SelectItem value="Pending">Pending</SelectItem>
-            <SelectItem value="Approved">Approved</SelectItem>
-            <SelectItem value="Rejected">Rejected</SelectItem>
-            <SelectItem value="In Review">In Review</SelectItem>
+            <SelectItem value="pending">Pending</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="approved">Approved</SelectItem>
+            <SelectItem value="rejected">Rejected</SelectItem>
+            <SelectItem value="closed">Closed</SelectItem>
           </SelectContent>
         </Select>
       </div>
 
-      <div className="rounded-xl border bg-card card-shadow overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Request ID</TableHead>
-              <TableHead>Item</TableHead>
-              <TableHead className="hidden md:table-cell">Category</TableHead>
-              <TableHead className="hidden md:table-cell">Budget</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="hidden lg:table-cell">Date</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.map(r => (
-              <TableRow key={r.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelected(r)}>
-                <TableCell className="font-medium">{r.id}</TableCell>
-                <TableCell>{r.item}</TableCell>
-                <TableCell className="hidden md:table-cell text-muted-foreground">{r.category}</TableCell>
-                <TableCell className="hidden md:table-cell">${r.budget.toLocaleString()}</TableCell>
-                <TableCell><StatusBadge status={r.status} /></TableCell>
-                <TableCell className="hidden lg:table-cell text-muted-foreground">{r.createdAt}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+      {listQuery.isLoading && (
+        <div className="rounded-xl border bg-card p-6 card-shadow text-sm text-muted-foreground flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading purchase requests...
+        </div>
+      )}
 
-      <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
+      {listQuery.isError && (
+        <div className="rounded-xl border border-destructive/30 bg-card p-6 card-shadow space-y-3">
+          <p className="text-sm text-destructive">{getApiErrorMessage(listQuery.error)}</p>
+          <Button type="button" variant="outline" onClick={() => listQuery.refetch()}>Retry</Button>
+        </div>
+      )}
+
+      {!listQuery.isLoading && !listQuery.isError && (
+        <div className="rounded-xl border bg-card card-shadow overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>PR Number</TableHead>
+                <TableHead>Item</TableHead>
+                <TableHead className="hidden md:table-cell">Category</TableHead>
+                <TableHead className="hidden md:table-cell">Budget</TableHead>
+                <TableHead>AI Status</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="hidden lg:table-cell">Created</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((request) => (
+                <TableRow
+                  key={request.id}
+                  className="cursor-pointer hover:bg-muted/50"
+                  onClick={() => setSelectedId(request.id)}
+                >
+                  <TableCell className="font-medium">{request.pr_number}</TableCell>
+                  <TableCell>{request.item_name}</TableCell>
+                  <TableCell className="hidden md:table-cell text-muted-foreground">{request.category}</TableCell>
+                  <TableCell className="hidden md:table-cell">${request.budget.toLocaleString()}</TableCell>
+                  <TableCell><StatusBadge status={request.ai_status} /></TableCell>
+                  <TableCell><StatusBadge status={request.status} /></TableCell>
+                  <TableCell className="hidden lg:table-cell text-muted-foreground">
+                    {new Date(request.created_at).toLocaleDateString()}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      <Dialog open={Boolean(selectedId)} onOpenChange={(open) => !open && setSelectedId(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>{selected?.id} — {selected?.item}</DialogTitle></DialogHeader>
-          {selected && (
+          <DialogHeader><DialogTitle>Purchase Request Details</DialogTitle></DialogHeader>
+
+          {detailQuery.isLoading && (
+            <div className="text-sm text-muted-foreground flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading request details...
+            </div>
+          )}
+
+          {detailQuery.isError && (
             <div className="space-y-3 text-sm">
-              <div className="grid grid-cols-2 gap-3">
-                <div><span className="text-muted-foreground">Category:</span> {selected.category}</div>
-                <div><span className="text-muted-foreground">Quantity:</span> {selected.quantity}</div>
-                <div><span className="text-muted-foreground">Budget:</span> ${selected.budget.toLocaleString()}</div>
-                <div><span className="text-muted-foreground">Status:</span> <StatusBadge status={selected.status} /></div>
-                <div><span className="text-muted-foreground">Requested by:</span> {selected.requestedBy}</div>
-                <div><span className="text-muted-foreground">Date:</span> {selected.createdAt}</div>
+              <p className="text-destructive">{getApiErrorMessage(detailQuery.error)}</p>
+              {selectedId && (
+                <Button type="button" variant="outline" onClick={() => detailQuery.refetch()}>
+                  Retry
+                </Button>
+              )}
+            </div>
+          )}
+
+          {detailQuery.data && (
+            <div className="space-y-4 text-sm">
+              <div className="space-y-1">
+                <h3 className="font-semibold">{detailQuery.data.pr_number} - {detailQuery.data.item_name}</h3>
+                <p className="text-muted-foreground">{detailQuery.data.description}</p>
               </div>
-              <div><span className="text-muted-foreground">Description:</span> {selected.description}</div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div><span className="text-muted-foreground">Category:</span> {detailQuery.data.category}</div>
+                <div><span className="text-muted-foreground">Quantity:</span> {detailQuery.data.quantity}</div>
+                <div><span className="text-muted-foreground">Budget:</span> ${detailQuery.data.budget.toLocaleString()}</div>
+                <div><span className="text-muted-foreground">Status:</span> <StatusBadge className="ml-1" status={detailQuery.data.status} /></div>
+                <div><span className="text-muted-foreground">AI Status:</span> <StatusBadge className="ml-1" status={detailQuery.data.ai_status} /></div>
+                <div><span className="text-muted-foreground">Updated:</span> {new Date(detailQuery.data.updated_at).toLocaleString()}</div>
+              </div>
+
+              <div><span className="text-muted-foreground">Improved Description:</span> {detailQuery.data.improved_description}</div>
+              <div><span className="text-muted-foreground">Budget Feedback:</span> {detailQuery.data.budget_feedback}</div>
+              <div>
+                <span className="text-muted-foreground">Missing Fields:</span>{" "}
+                {detailQuery.data.missing_fields.length > 0 ? detailQuery.data.missing_fields.join(", ") : "None"}
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="gap-2"
+                onClick={() => handleDownloadPdf(detailQuery.data.id, detailQuery.data.pr_number)}
+                disabled={downloadingRequestId === detailQuery.data.id}
+              >
+                {downloadingRequestId === detailQuery.data.id ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="h-4 w-4" />
+                )}
+                Download PDF
+              </Button>
             </div>
           )}
         </DialogContent>

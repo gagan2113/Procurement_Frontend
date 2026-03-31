@@ -15,6 +15,9 @@ const statusMap: Record<string, StatusType> = {
   Approved: "success", Delivered: "success", Matched: "success", Paid: "success", "Ready for Payment": "success", Valid: "success", Closed: "success",
   Pending: "warning", "In Review": "warning", "In Progress": "warning", Sent: "warning", Acknowledged: "warning", Created: "warning", Draft: "neutral",
   Rejected: "danger", Mismatched: "danger", Flagged: "danger", "Needs Review": "danger",
+  approved: "success", closed: "neutral", valid: "success",
+  pending: "warning", active: "info",
+  rejected: "danger", needs_review: "danger",
 };
 
 interface StatusBadgeProps {
