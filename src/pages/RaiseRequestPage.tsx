@@ -1,7 +1,5 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/shared/PageHeader";
-import { AiInsightPanel } from "@/components/shared/AiInsightPanel";
-import { StatusBadge } from "@/components/shared/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,28 +12,75 @@ import {
   downloadPurchaseRequestPdf,
   getApiErrorMessage,
   getApiFieldErrors,
+  rewritePurchaseRequestDescription,
+  type RewriteDescriptionInput,
   type PurchaseRequest,
 } from "@/lib/purchase-request-api";
 
 const categories = ["IT Equipment", "IT Services", "Furniture", "Marketing", "Operations", "HR"];
+const DESCRIPTION_MIN_LENGTH = 10;
 
-const aiSuggestions = [
-  "Based on recent orders, consider specifying RAM and processor requirements for laptop requests.",
-  "Budget seems within range for this category. Average spend: $1,200/unit.",
-  "Tip: Add delivery timeline to help vendor selection later.",
-];
+function formatLocalDate(dateValue: string) {
+  const parsed = new Date(`${dateValue}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return dateValue;
+  }
+
+  return parsed.toLocaleDateString();
+}
+
+function getDateInputValue(daysFromToday = 0) {
+  const base = new Date();
+  base.setHours(0, 0, 0, 0);
+  base.setDate(base.getDate() + daysFromToday);
+
+  const year = base.getFullYear();
+  const month = String(base.getMonth() + 1).padStart(2, "0");
+  const day = String(base.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 export default function RaiseRequestPage() {
   const { toast } = useToast();
   const createRequestMutation = useCreatePurchaseRequestMutation();
-  const [form, setForm] = useState({ item_name: "", category: "", quantity: "", budget: "", description: "" });
-  const [aiActive, setAiActive] = useState(false);
+  const [form, setForm] = useState({
+    item_name: "",
+    category: "",
+    quantity: "",
+    budget: "",
+    description: "",
+    expected_delivery_date: "",
+  });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [createdRequest, setCreatedRequest] = useState<PurchaseRequest | null>(null);
+  const [isRewriteLoading, setIsRewriteLoading] = useState(false);
+  const [rewriteMissingDetails, setRewriteMissingDetails] = useState<string[]>([]);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const todayDate = getDateInputValue(0);
+  const tomorrowDate = getDateInputValue(1);
+
+  const perUnitBudget = useMemo(() => {
+    const quantity = Number.parseFloat(form.quantity);
+    const budget = Number.parseFloat(form.budget);
+
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(budget) || budget <= 0) {
+      return null;
+    }
+
+    return budget / quantity;
+  }, [form.quantity, form.budget]);
 
   const setField = (key: keyof typeof form, value: string) => {
     setForm((previous) => ({ ...previous, [key]: value }));
+    setFieldErrors((previous) => {
+      if (!previous[key]) {
+        return previous;
+      }
+
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
   };
 
   const validateForm = () => {
@@ -45,6 +90,7 @@ export default function RaiseRequestPage() {
     const description = form.description.trim();
     const quantity = Number.parseInt(form.quantity, 10);
     const budget = Number.parseFloat(form.budget);
+    const expectedDeliveryDate = form.expected_delivery_date.trim();
 
     if (itemName.length < 2 || itemName.length > 255) {
       errors.item_name = "Item name must be between 2 and 255 characters.";
@@ -62,8 +108,14 @@ export default function RaiseRequestPage() {
       errors.budget = "Budget must be greater than 0.";
     }
 
-    if (description.length < 10 || description.length > 2000) {
-      errors.description = "Description must be between 10 and 2000 characters.";
+    if (description.length < DESCRIPTION_MIN_LENGTH || description.length > 2000) {
+      errors.description = `Description must be between ${DESCRIPTION_MIN_LENGTH} and 2000 characters.`;
+    }
+
+    if (!expectedDeliveryDate) {
+      errors.expected_delivery_date = "Expected delivery date is required.";
+    } else if (expectedDeliveryDate <= todayDate) {
+      errors.expected_delivery_date = "Expected delivery date must be a future date.";
     }
 
     return errors;
@@ -115,11 +167,13 @@ export default function RaiseRequestPage() {
         quantity: Number.parseInt(form.quantity, 10),
         budget: Number.parseFloat(form.budget),
         description: form.description.trim(),
+        expected_delivery_date: form.expected_delivery_date.trim(),
       };
 
       const response = await createRequestMutation.mutateAsync(payload);
       setCreatedRequest(response.data);
-      setForm({ item_name: "", category: "", quantity: "", budget: "", description: "" });
+      setRewriteMissingDetails([]);
+      setForm({ item_name: "", category: "", quantity: "", budget: "", description: "", expected_delivery_date: "" });
       toast({ title: "Request created", description: response.message });
     } catch (error) {
       const apiErrors = getApiFieldErrors(error);
@@ -135,20 +189,91 @@ export default function RaiseRequestPage() {
     }
   };
 
-  const autoFill = () => {
-    setAiActive(true);
-    setTimeout(() => {
-      setForm({ item_name: "Dell Latitude 5550", category: "IT Equipment", quantity: "25", budget: "37500", description: "Laptops for engineering team expansion. Specs: i7, 16GB RAM, 512GB SSD." });
-      setAiActive(false);
-    }, 800);
+  const handleRewriteDescription = async () => {
+    const description = form.description.trim();
+    if (description.length < DESCRIPTION_MIN_LENGTH) {
+      const message = `Description must be at least ${DESCRIPTION_MIN_LENGTH} characters before rewrite.`;
+      setFieldErrors((previous) => ({ ...previous, description: message }));
+      toast({
+        title: "Description too short",
+        description: message,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const payload: RewriteDescriptionInput = {
+      description,
+    };
+
+    const itemName = form.item_name.trim();
+    const category = form.category.trim();
+    const expectedDeliveryDate = form.expected_delivery_date.trim();
+    const quantity = Number.parseInt(form.quantity, 10);
+    const budget = Number.parseFloat(form.budget);
+
+    if (itemName) {
+      payload.item_name = itemName;
+    }
+
+    if (category) {
+      payload.category = category;
+    }
+
+    if (Number.isInteger(quantity) && quantity > 0) {
+      payload.quantity = quantity;
+    }
+
+    if (Number.isFinite(budget) && budget > 0) {
+      payload.budget = budget;
+    }
+
+    if (expectedDeliveryDate) {
+      payload.expected_delivery_date = expectedDeliveryDate;
+    }
+
+    setIsRewriteLoading(true);
+    try {
+      const response = await rewritePurchaseRequestDescription(payload);
+      const rewrittenDescription = response.data.rewritten_description?.trim();
+      const missingDetails = Array.isArray(response.data.missing_details) ? response.data.missing_details : [];
+
+      if (rewrittenDescription) {
+        setForm((previous) => ({ ...previous, description: rewrittenDescription }));
+      }
+
+      setRewriteMissingDetails(missingDetails);
+
+      setFieldErrors((previous) => {
+        if (!previous.description) {
+          return previous;
+        }
+
+        const next = { ...previous };
+        delete next.description;
+        return next;
+      });
+
+      toast({
+        title: "Description rewritten",
+        description: response.message,
+      });
+    } catch (error) {
+      toast({
+        title: "Could not rewrite description",
+        description: getApiErrorMessage(error),
+        variant: "destructive",
+      });
+    } finally {
+      setIsRewriteLoading(false);
+    }
   };
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 max-w-4xl">
       <PageHeader title="Raise Procurement Request" description="Submit a new procurement request for review" />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <form onSubmit={handleSubmit} className="lg:col-span-2 space-y-5">
+      <form onSubmit={handleSubmit} className="space-y-5">
           <div className="rounded-xl border bg-card p-6 card-shadow space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -173,7 +298,7 @@ export default function RaiseRequestPage() {
                 {fieldErrors.category && <p className="text-xs text-destructive">{fieldErrors.category}</p>}
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="qty">Quantity</Label>
                 <Input
@@ -189,7 +314,7 @@ export default function RaiseRequestPage() {
                 {fieldErrors.quantity && <p className="text-xs text-destructive">{fieldErrors.quantity}</p>}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="budget">Budget ($)</Label>
+                <Label htmlFor="budget">INR Total Budget</Label>
                 <Input
                   id="budget"
                   type="number"
@@ -201,6 +326,21 @@ export default function RaiseRequestPage() {
                   required
                 />
                 {fieldErrors.budget && <p className="text-xs text-destructive">{fieldErrors.budget}</p>}
+                <p className="text-xs text-muted-foreground">
+                  Budget Per Unit (read-only): {perUnitBudget === null ? "-" : `INR ${perUnitBudget.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="expected_delivery_date">Expected Delivery Date</Label>
+                <Input
+                  id="expected_delivery_date"
+                  type="date"
+                  min={tomorrowDate}
+                  value={form.expected_delivery_date}
+                  onChange={(e) => setField("expected_delivery_date", e.target.value)}
+                  required
+                />
+                {fieldErrors.expected_delivery_date && <p className="text-xs text-destructive">{fieldErrors.expected_delivery_date}</p>}
               </div>
             </div>
             <div className="space-y-2">
@@ -217,36 +357,53 @@ export default function RaiseRequestPage() {
               />
               {fieldErrors.description && <p className="text-xs text-destructive">{fieldErrors.description}</p>}
             </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-2"
+              onClick={handleRewriteDescription}
+              disabled={isRewriteLoading}
+            >
+              {isRewriteLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              {isRewriteLoading ? "Rewriting..." : "AI Rewrite"}
+            </Button>
+
+            {rewriteMissingDetails.length > 0 && (
+              <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+                <p className="text-sm font-medium">Missing details to confirm</p>
+                <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground space-y-1">
+                  {rewriteMissingDetails.map((detail) => (
+                    <li key={detail}>{detail}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <Button type="submit" disabled={createRequestMutation.isPending} className="gap-2">
               {createRequestMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              Submit Request
+              Submit Purchase Request
             </Button>
           </div>
 
           {createdRequest && (
             <div className="rounded-xl border bg-card p-6 card-shadow space-y-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-base font-semibold">Created Request: {createdRequest.pr_number}</h3>
-                  <p className="text-sm text-muted-foreground">{createdRequest.item_name}</p>
-                </div>
-                <StatusBadge status={createdRequest.ai_status} />
+              <div>
+                <h3 className="text-base font-semibold">Created Request: {createdRequest.pr_number}</h3>
+                <p className="text-sm text-muted-foreground">{createdRequest.item_name}</p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                 <p><span className="text-muted-foreground">Status:</span> {createdRequest.status}</p>
-                <p><span className="text-muted-foreground">Budget:</span> ${createdRequest.budget.toLocaleString()}</p>
+                <p><span className="text-muted-foreground">INR Total Budget:</span> INR {createdRequest.budget.toLocaleString()}</p>
+                <p><span className="text-muted-foreground">Budget Per Unit:</span> INR {(Number.isFinite(createdRequest.budget_per_unit) ? createdRequest.budget_per_unit : createdRequest.budget / Math.max(createdRequest.quantity, 1)).toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                <p><span className="text-muted-foreground">Expected Delivery:</span> {formatLocalDate(createdRequest.expected_delivery_date)}</p>
                 <p><span className="text-muted-foreground">Created:</span> {new Date(createdRequest.created_at).toLocaleString()}</p>
                 <p><span className="text-muted-foreground">Updated:</span> {new Date(createdRequest.updated_at).toLocaleString()}</p>
               </div>
 
               <div className="space-y-2 text-sm">
-                <p><span className="text-muted-foreground">Improved Description:</span> {createdRequest.improved_description}</p>
-                <p><span className="text-muted-foreground">Budget Feedback:</span> {createdRequest.budget_feedback}</p>
-                <p>
-                  <span className="text-muted-foreground">Missing Fields:</span>{" "}
-                  {createdRequest.missing_fields.length > 0 ? createdRequest.missing_fields.join(", ") : "None"}
-                </p>
+                <p><span className="text-muted-foreground">Description:</span> {createdRequest.description}</p>
               </div>
 
               <Button
@@ -261,22 +418,7 @@ export default function RaiseRequestPage() {
               </Button>
             </div>
           )}
-        </form>
-
-        <div className="space-y-4">
-          <AiInsightPanel title="AI Assistant">
-            <div className="space-y-3">
-              {aiSuggestions.map((s, i) => (
-                <p key={i} className="text-xs leading-relaxed">• {s}</p>
-              ))}
-            </div>
-          </AiInsightPanel>
-          <Button variant="outline" onClick={autoFill} disabled={aiActive} className="w-full gap-2 border-ai/30 text-ai hover:bg-ai-surface">
-            {aiActive ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            AI Auto-Fill Demo
-          </Button>
-        </div>
-      </div>
+      </form>
     </div>
   );
 }

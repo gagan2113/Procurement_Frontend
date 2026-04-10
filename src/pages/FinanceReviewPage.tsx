@@ -13,13 +13,16 @@ export default function FinanceReviewPage() {
   const updateRequestMutation = useUpdatePurchaseRequestMutation();
   const financeData = (listQuery.data?.items ?? []).filter((request) => request.status === "pending" || request.status === "active");
 
-  const handleAction = async (id: string, action: "approve" | "reject") => {
+  const handleAction = async (id: string, expectedDeliveryDate: string, action: "approve" | "reject") => {
     const targetStatus = action === "approve" ? "approved" : "rejected";
 
     try {
       const response = await updateRequestMutation.mutateAsync({
         prId: id,
-        payload: { status: targetStatus },
+        payload: {
+          status: targetStatus,
+          expected_delivery_date: expectedDeliveryDate,
+        },
       });
 
       toast({
@@ -55,13 +58,16 @@ export default function FinanceReviewPage() {
       {!listQuery.isLoading && !listQuery.isError && (
         <div className="grid gap-4">
           {financeData.map((request) => {
+            const aiStatus = typeof request.ai_status === "string" ? request.ai_status : "pending";
+            const missingFields = Array.isArray(request.missing_fields) ? request.missing_fields : [];
+            const budgetFeedback = request.budget_feedback || "No budget feedback available.";
             const riskFlags: string[] = [];
-            if (request.ai_status === "needs_review") {
+            if (aiStatus === "needs_review") {
               riskFlags.push("AI flagged for review");
             }
 
-            if (request.missing_fields.length > 0) {
-              riskFlags.push(`Missing fields: ${request.missing_fields.join(", ")}`);
+            if (missingFields.length > 0) {
+              riskFlags.push(`Missing fields: ${missingFields.join(", ")}`);
             }
 
             if (request.status === "active") {
@@ -84,9 +90,9 @@ export default function FinanceReviewPage() {
 
                     <div className="flex flex-wrap gap-4 text-sm">
                       <span className="flex items-center gap-1"><DollarSign className="h-4 w-4 text-muted-foreground" /> ${request.budget.toLocaleString()}</span>
-                      <span className={request.ai_status === "valid" ? "text-success" : "text-warning"}>
-                        {request.ai_status === "valid" ? <CheckCircle className="h-4 w-4 inline mr-1" /> : <AlertTriangle className="h-4 w-4 inline mr-1" />}
-                        AI status: <StatusBadge className="ml-1" status={request.ai_status} />
+                      <span className={aiStatus === "valid" ? "text-success" : "text-warning"}>
+                        {aiStatus === "valid" ? <CheckCircle className="h-4 w-4 inline mr-1" /> : <AlertTriangle className="h-4 w-4 inline mr-1" />}
+                        AI status: <StatusBadge className="ml-1" status={aiStatus} />
                       </span>
                     </div>
 
@@ -99,13 +105,13 @@ export default function FinanceReviewPage() {
                     )}
 
                     <AiInsightPanel title="AI Analysis" className="text-xs">
-                      <p>{request.budget_feedback}</p>
+                      <p>{budgetFeedback}</p>
                     </AiInsightPanel>
                   </div>
 
                   <div className="flex lg:flex-col gap-2 lg:justify-center">
                     <Button
-                      onClick={() => handleAction(request.id, "approve")}
+                      onClick={() => handleAction(request.id, request.expected_delivery_date, "approve")}
                       className="gap-2 bg-success hover:bg-success/90"
                       disabled={isUpdatingCurrent}
                     >
@@ -114,7 +120,7 @@ export default function FinanceReviewPage() {
                     </Button>
                     <Button
                       variant="outline"
-                      onClick={() => handleAction(request.id, "reject")}
+                      onClick={() => handleAction(request.id, request.expected_delivery_date, "reject")}
                       className="gap-2 text-destructive border-destructive/30 hover:bg-destructive/10"
                       disabled={isUpdatingCurrent}
                     >

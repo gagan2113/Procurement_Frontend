@@ -12,11 +12,15 @@ export interface PurchaseRequest {
   category: string;
   quantity: number;
   budget: number;
+  budget_per_unit: number;
   description: string;
-  improved_description: string;
-  missing_fields: string[];
-  budget_feedback: string;
-  ai_status: PurchaseRequestAiStatus;
+  expected_delivery_date: string;
+  rewritten_description?: string;
+  missing_details?: string[];
+  improved_description?: string;
+  missing_fields?: string[];
+  budget_feedback?: string;
+  ai_status?: PurchaseRequestAiStatus;
   status: PurchaseRequestStatus;
   pdf_path: string;
   created_at: string;
@@ -34,6 +38,7 @@ export interface CreatePurchaseRequestInput {
   quantity: number;
   budget: number;
   description: string;
+  expected_delivery_date: string;
 }
 
 export interface UpdatePurchaseRequestInput {
@@ -42,7 +47,22 @@ export interface UpdatePurchaseRequestInput {
   quantity?: number;
   budget?: number;
   description?: string;
+  expected_delivery_date?: string;
   status?: PurchaseRequestStatus;
+}
+
+export interface RewriteDescriptionInput {
+  description: string;
+  item_name?: string;
+  category?: string;
+  quantity?: number;
+  budget?: number;
+  expected_delivery_date?: string;
+}
+
+export interface RewriteDescriptionData {
+  rewritten_description: string;
+  missing_details: string[];
 }
 
 export interface ApiEnvelope<T> {
@@ -81,7 +101,57 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function parseValidationErrors(errors: unknown): FastApiValidationError[] {
+  if (Array.isArray(errors)) {
+    return errors
+      .filter(isObject)
+      .map((item) => ({
+        type: String(item.type ?? "validation_error"),
+        loc: Array.isArray(item.loc) ? item.loc.map((entry) => (typeof entry === "number" ? entry : String(entry))) : [],
+        msg: String(item.msg ?? item.message ?? "Validation error"),
+        input: item.input,
+        ctx: isObject(item.ctx) ? item.ctx : undefined,
+      }));
+  }
+
+  if (isObject(errors)) {
+    const validationErrors: FastApiValidationError[] = [];
+
+    for (const [field, value] of Object.entries(errors)) {
+      if (Array.isArray(value)) {
+        for (const message of value) {
+          if (typeof message === "string") {
+            validationErrors.push({
+              type: "validation_error",
+              loc: ["body", field],
+              msg: message,
+            });
+          }
+        }
+      } else if (typeof value === "string") {
+        validationErrors.push({
+          type: "validation_error",
+          loc: ["body", field],
+          msg: value,
+        });
+      }
+    }
+
+    return validationErrors;
+  }
+
+  return [];
+}
+
 function getErrorMessage(payload: unknown): { message: string; validationErrors: FastApiValidationError[] } {
+  if (isObject(payload) && "errors" in payload) {
+    const validationErrors = parseValidationErrors(payload.errors);
+    const message = typeof payload.message === "string" ? payload.message : "Validation error";
+    if (validationErrors.length > 0) {
+      return { message, validationErrors };
+    }
+  }
+
   if (isObject(payload) && "detail" in payload) {
     const detail = payload.detail;
     if (typeof detail === "string") {
@@ -89,13 +159,7 @@ function getErrorMessage(payload: unknown): { message: string; validationErrors:
     }
 
     if (Array.isArray(detail)) {
-      const validationErrors = detail.filter(isObject).map((item) => ({
-        type: String(item.type ?? "validation_error"),
-        loc: Array.isArray(item.loc) ? item.loc.map((entry) => (typeof entry === "number" ? entry : String(entry))) : [],
-        msg: String(item.msg ?? "Validation error"),
-        input: item.input,
-        ctx: isObject(item.ctx) ? item.ctx : undefined,
-      }));
+      const validationErrors = parseValidationErrors(detail);
 
       const combinedMessage = validationErrors.map((item) => item.msg).join("; ") || "Validation error";
       return { message: combinedMessage, validationErrors };
@@ -144,7 +208,7 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<Api
 
   const payload = (await response.json()) as ApiEnvelope<T>;
   if (!payload.success) {
-    throw new ApiClientError(payload.message || "Request failed", response.status || 500);
+    throw new ApiClientError(payload.message || "Request failed", response.status || 500, parseValidationErrors(payload.errors));
   }
 
   return payload;
@@ -191,6 +255,13 @@ export function getApiFieldErrors(error: unknown): Record<string, string> {
 
 export async function createPurchaseRequest(payload: CreatePurchaseRequestInput) {
   return requestJson<PurchaseRequest>(`${API_PREFIX}/purchase-request`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function rewritePurchaseRequestDescription(payload: RewriteDescriptionInput) {
+  return requestJson<RewriteDescriptionData>(`${API_PREFIX}/purchase-request/rewrite-description`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

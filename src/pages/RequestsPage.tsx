@@ -11,6 +11,15 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { downloadPurchaseRequestPdf, getApiErrorMessage } from "@/lib/purchase-request-api";
 
+function formatLocalDate(dateValue: string) {
+  const parsed = new Date(`${dateValue}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return dateValue;
+  }
+
+  return parsed.toLocaleDateString();
+}
+
 export default function RequestsPage() {
   const { toast } = useToast();
   const listQuery = usePurchaseRequestList({ skip: 0, limit: 50 });
@@ -99,8 +108,9 @@ export default function RequestsPage() {
                 <TableHead>PR Number</TableHead>
                 <TableHead>Item</TableHead>
                 <TableHead className="hidden md:table-cell">Category</TableHead>
-                <TableHead className="hidden md:table-cell">Budget</TableHead>
-                <TableHead>AI Status</TableHead>
+                <TableHead className="hidden md:table-cell">INR Total Budget</TableHead>
+                <TableHead className="hidden lg:table-cell">Budget/Unit</TableHead>
+                <TableHead className="hidden lg:table-cell">Expected Delivery</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="hidden lg:table-cell">Created</TableHead>
               </TableRow>
@@ -115,8 +125,11 @@ export default function RequestsPage() {
                   <TableCell className="font-medium">{request.pr_number}</TableCell>
                   <TableCell>{request.item_name}</TableCell>
                   <TableCell className="hidden md:table-cell text-muted-foreground">{request.category}</TableCell>
-                  <TableCell className="hidden md:table-cell">${request.budget.toLocaleString()}</TableCell>
-                  <TableCell><StatusBadge status={request.ai_status} /></TableCell>
+                  <TableCell className="hidden md:table-cell">INR {request.budget.toLocaleString()}</TableCell>
+                  <TableCell className="hidden lg:table-cell text-muted-foreground">
+                    INR {request.budget_per_unit.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell text-muted-foreground">{formatLocalDate(request.expected_delivery_date)}</TableCell>
                   <TableCell><StatusBadge status={request.status} /></TableCell>
                   <TableCell className="hidden lg:table-cell text-muted-foreground">
                     {new Date(request.created_at).toLocaleDateString()}
@@ -159,17 +172,11 @@ export default function RequestsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div><span className="text-muted-foreground">Category:</span> {detailQuery.data.category}</div>
                 <div><span className="text-muted-foreground">Quantity:</span> {detailQuery.data.quantity}</div>
-                <div><span className="text-muted-foreground">Budget:</span> ${detailQuery.data.budget.toLocaleString()}</div>
+                <div><span className="text-muted-foreground">INR Total Budget:</span> INR {detailQuery.data.budget.toLocaleString()}</div>
+                <div><span className="text-muted-foreground">Budget Per Unit:</span> INR {detailQuery.data.budget_per_unit.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                <div><span className="text-muted-foreground">Expected Delivery:</span> {formatLocalDate(detailQuery.data.expected_delivery_date)}</div>
                 <div><span className="text-muted-foreground">Status:</span> <StatusBadge className="ml-1" status={detailQuery.data.status} /></div>
-                <div><span className="text-muted-foreground">AI Status:</span> <StatusBadge className="ml-1" status={detailQuery.data.ai_status} /></div>
                 <div><span className="text-muted-foreground">Updated:</span> {new Date(detailQuery.data.updated_at).toLocaleString()}</div>
-              </div>
-
-              <div><span className="text-muted-foreground">Improved Description:</span> {detailQuery.data.improved_description}</div>
-              <div><span className="text-muted-foreground">Budget Feedback:</span> {detailQuery.data.budget_feedback}</div>
-              <div>
-                <span className="text-muted-foreground">Missing Fields:</span>{" "}
-                {detailQuery.data.missing_fields.length > 0 ? detailQuery.data.missing_fields.join(", ") : "None"}
               </div>
 
               <Button
