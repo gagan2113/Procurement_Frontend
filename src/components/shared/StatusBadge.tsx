@@ -13,9 +13,10 @@ const statusStyles: Record<StatusType, string> = {
 
 const statusMap: Record<string, StatusType> = {
   Approved: "success", Delivered: "success", Matched: "success", Paid: "success", "Ready for Payment": "success", Valid: "success", Closed: "success",
+  Open: "info", "Open for Bidding": "info",
   Pending: "warning", "In Review": "warning", "In Progress": "warning", Sent: "warning", Acknowledged: "warning", Created: "warning", Draft: "neutral",
   Rejected: "danger", Mismatched: "danger", Flagged: "danger", "Needs Review": "danger",
-  approved: "success", closed: "neutral", valid: "success",
+  approved: "success", closed: "neutral", valid: "success", open: "info",
   pending: "warning", active: "info",
   rejected: "danger", needs_review: "danger",
 };

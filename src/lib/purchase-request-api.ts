@@ -1,3 +1,5 @@
+import { normalizeRfqWorkflowFromUnknown, type RfqWorkflow } from "@/lib/rfq-workflow-api";
+
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || DEFAULT_API_BASE_URL;
 const API_PREFIX = "/api/v1";
@@ -63,6 +65,12 @@ export interface RewriteDescriptionInput {
 export interface RewriteDescriptionData {
   rewritten_description: string;
   missing_details: string[];
+}
+
+export interface FinanceApproveResponseData {
+  purchase_request?: PurchaseRequest;
+  rfq_workflow?: RfqWorkflow | null;
+  [key: string]: unknown;
 }
 
 export interface ApiEnvelope<T> {
@@ -227,6 +235,28 @@ function extractFilename(contentDisposition: string | null, fallbackName: string
   return match[1];
 }
 
+function normalizeFinanceApproveData(raw: unknown): FinanceApproveResponseData {
+  if (!isObject(raw)) {
+    return {
+      rfq_workflow: null,
+    };
+  }
+
+  const purchase_request = isObject(raw.purchase_request)
+    ? (raw.purchase_request as unknown as PurchaseRequest)
+    : ("id" in raw && "pr_number" in raw)
+      ? (raw as unknown as PurchaseRequest)
+      : undefined;
+
+  const rfq_workflow = normalizeRfqWorkflowFromUnknown(raw.rfq_workflow ?? raw.rfq_workflow_data ?? raw.rfq_workflow_state ?? null);
+
+  return {
+    ...raw,
+    purchase_request,
+    rfq_workflow,
+  };
+}
+
 export function getApiErrorMessage(error: unknown): string {
   if (error instanceof ApiClientError) {
     return error.message;
@@ -285,6 +315,41 @@ export async function updatePurchaseRequest(prId: string, payload: UpdatePurchas
     method: "PUT",
     body: JSON.stringify(payload),
   });
+}
+
+export async function financeApprovePurchaseRequest(
+  prId: string,
+  fallbackPayload: UpdatePurchaseRequestInput = { status: "approved" },
+) {
+  try {
+    const response = await requestJson<unknown>(`${API_PREFIX}/purchase-request/${encodeURIComponent(prId)}/finance-approve`, {
+      method: "POST",
+    });
+
+    return {
+      ...response,
+      data: normalizeFinanceApproveData(response.data),
+    } as ApiEnvelope<FinanceApproveResponseData>;
+  } catch (error) {
+    if (error instanceof ApiClientError && (error.status === 404 || error.status === 405 || error.status === 501)) {
+      const fallback = await updatePurchaseRequest(prId, {
+        ...fallbackPayload,
+        status: "approved",
+      });
+
+      return {
+        success: fallback.success,
+        message: fallback.message,
+        errors: fallback.errors,
+        data: {
+          purchase_request: fallback.data,
+          rfq_workflow: null,
+        },
+      } as ApiEnvelope<FinanceApproveResponseData>;
+    }
+
+    throw error;
+  }
 }
 
 export async function downloadPurchaseRequestPdf(prId: string) {

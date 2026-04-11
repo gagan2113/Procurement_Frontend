@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type CreatePurchaseRequestInput,
+  type FinanceApproveResponseData,
   type PurchaseRequest,
   type PurchaseRequestListData,
   type UpdatePurchaseRequestInput,
   createPurchaseRequest,
+  financeApprovePurchaseRequest,
   getPurchaseRequestById,
   listPurchaseRequests,
   updatePurchaseRequest,
@@ -72,6 +74,30 @@ export function useUpdatePurchaseRequestMutation() {
     mutationFn: ({ prId, payload }: UpdatePurchaseRequestMutationInput) => updatePurchaseRequest(prId, payload),
     onSuccess: (response, variables) => {
       queryClient.setQueryData(purchaseRequestQueryKeys.detail(variables.prId), response.data);
+      queryClient.invalidateQueries({ queryKey: purchaseRequestQueryKeys.all });
+    },
+  });
+}
+
+interface FinanceApprovePurchaseRequestMutationInput {
+  prId: string;
+  expectedDeliveryDate: string;
+}
+
+export function useFinanceApprovePurchaseRequestMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ prId, expectedDeliveryDate }: FinanceApprovePurchaseRequestMutationInput) =>
+      financeApprovePurchaseRequest(prId, {
+        status: "approved",
+        expected_delivery_date: expectedDeliveryDate,
+      }),
+    onSuccess: (response: { data: FinanceApproveResponseData }, variables: FinanceApprovePurchaseRequestMutationInput) => {
+      if (response.data.purchase_request) {
+        queryClient.setQueryData(purchaseRequestQueryKeys.detail(variables.prId), response.data.purchase_request);
+      }
+
       queryClient.invalidateQueries({ queryKey: purchaseRequestQueryKeys.all });
     },
   });
