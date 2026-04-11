@@ -10,6 +10,7 @@ import DemandValidationPage from "./pages/DemandValidationPage";
 import RequestsPage from "./pages/RequestsPage";
 import FinanceReviewPage from "./pages/FinanceReviewPage";
 import VendorsPage from "./pages/VendorsPage";
+import VendorDetailPage from "./pages/VendorDetailPage";
 import RFQPage from "./pages/RFQPage";
 import BidsPage from "./pages/BidsPage";
 import ShortlistingPage from "./pages/ShortlistingPage";
@@ -37,6 +38,7 @@ const App = () => (
             <Route path="/requests" element={<RequestsPage />} />
             <Route path="/finance-review" element={<FinanceReviewPage />} />
             <Route path="/vendors" element={<VendorsPage />} />
+            <Route path="/vendors/:vendorId" element={<VendorDetailPage />} />
             <Route path="/rfq" element={<RFQPage />} />
             <Route path="/bids" element={<BidsPage />} />
             <Route path="/shortlisting" element={<ShortlistingPage />} />

@@ -39,7 +39,13 @@ export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
-  const isActive = (path: string) => location.pathname === path;
+  const isActive = (path: string) => {
+    if (path === "/") {
+      return location.pathname === path;
+    }
+
+    return location.pathname === path || location.pathname.startsWith(`${path}/`);
+  };
 
   const renderGroup = (label: string, items: typeof mainNav) => (
     <SidebarGroup>
@@ -49,7 +55,7 @@ export function AppSidebar() {
           {items.map((item) => (
             <SidebarMenuItem key={item.title}>
               <SidebarMenuButton asChild isActive={isActive(item.url)}>
-                <NavLink to={item.url} end className="gap-3" activeClassName="bg-sidebar-accent text-sidebar-accent-foreground">
+                <NavLink to={item.url} end={item.url === "/"} className="gap-3" activeClassName="bg-sidebar-accent text-sidebar-accent-foreground">
                   <item.icon className="h-4 w-4 shrink-0" />
                   {!collapsed && <span className="text-sm">{item.title}</span>}
                 </NavLink>
