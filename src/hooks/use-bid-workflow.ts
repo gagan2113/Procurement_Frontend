@@ -3,10 +3,14 @@ import {
   bidWorkflowQueryKeys,
   evaluateBidForRfq,
   getLiveBidSnapshot,
+  listBidSubmissions,
+  manualOverrideBidForRfq,
+  sendBidForApproval,
   selectBidWinner,
-  submitBidForRfq,
+  type BidSubmissionsResult,
+  type ManualOverrideInput,
+  type SendForApprovalInput,
   type BidSnapshot,
-  type SubmitBidInput,
 } from "@/lib/bid-workflow-api";
 
 export function useBidLiveSnapshot(rfqId: string | null, pollingEnabled = true) {
@@ -26,18 +30,16 @@ export function useBidLiveSnapshot(rfqId: string | null, pollingEnabled = true) 
   });
 }
 
-interface SubmitBidMutationInput {
-  rfqId: string;
-  payload?: SubmitBidInput;
-}
+export function useBidSubmissions(rfqId: string | null) {
+  return useQuery<BidSubmissionsResult>({
+    queryKey: rfqId ? bidWorkflowQueryKeys.submissions(rfqId) : ["bid-workflow", "submissions", "none"],
+    enabled: Boolean(rfqId),
+    queryFn: async () => {
+      if (!rfqId) {
+        throw new Error("RFQ ID is required");
+      }
 
-export function useSubmitBidMutation() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async ({ rfqId, payload }: SubmitBidMutationInput) => submitBidForRfq(rfqId, payload),
-    onSuccess: (result, variables) => {
-      queryClient.setQueryData(bidWorkflowQueryKeys.live(variables.rfqId), result.snapshot);
+      return listBidSubmissions(rfqId);
     },
   });
 }
@@ -53,6 +55,41 @@ export function useEvaluateBidMutation() {
     mutationFn: async ({ rfqId }: EvaluateBidMutationInput) => evaluateBidForRfq(rfqId),
     onSuccess: (result, variables) => {
       queryClient.setQueryData(bidWorkflowQueryKeys.live(variables.rfqId), result.snapshot);
+      queryClient.invalidateQueries({ queryKey: bidWorkflowQueryKeys.submissions(variables.rfqId) });
+    },
+  });
+}
+
+interface ManualOverrideMutationInput {
+  rfqId: string;
+  payload: ManualOverrideInput;
+}
+
+export function useManualOverrideBidMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ rfqId, payload }: ManualOverrideMutationInput) => manualOverrideBidForRfq(rfqId, payload),
+    onSuccess: (result, variables) => {
+      queryClient.setQueryData(bidWorkflowQueryKeys.live(variables.rfqId), result.snapshot);
+      queryClient.invalidateQueries({ queryKey: bidWorkflowQueryKeys.submissions(variables.rfqId) });
+    },
+  });
+}
+
+interface SendForApprovalMutationInput {
+  rfqId: string;
+  payload?: SendForApprovalInput;
+}
+
+export function useSendForApprovalMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ rfqId, payload }: SendForApprovalMutationInput) => sendBidForApproval(rfqId, payload),
+    onSuccess: (result, variables) => {
+      queryClient.setQueryData(bidWorkflowQueryKeys.live(variables.rfqId), result.snapshot);
+      queryClient.invalidateQueries({ queryKey: bidWorkflowQueryKeys.submissions(variables.rfqId) });
     },
   });
 }
@@ -69,6 +106,7 @@ export function useSelectBidWinnerMutation() {
     mutationFn: async ({ rfqId, vendorId }: SelectBidWinnerMutationInput) => selectBidWinner(rfqId, vendorId),
     onSuccess: (result, variables) => {
       queryClient.setQueryData(bidWorkflowQueryKeys.live(variables.rfqId), result.snapshot);
+      queryClient.invalidateQueries({ queryKey: bidWorkflowQueryKeys.submissions(variables.rfqId) });
     },
   });
 }

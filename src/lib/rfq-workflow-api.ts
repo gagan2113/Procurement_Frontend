@@ -40,6 +40,11 @@ export interface RfqDistributionStatus {
   [key: string]: unknown;
 }
 
+export interface RfqNotificationCounters {
+  emails_sent: number | null;
+  in_app_sent: number | null;
+}
+
 export interface RfqListItem {
   rfq_id: string;
   rfq_number: string | null;
@@ -58,6 +63,7 @@ export interface RfqListItem {
   pdf_download_url: string | null;
   created_at: string | null;
   updated_at: string | null;
+  deadline_expired?: boolean | null;
   [key: string]: unknown;
 }
 
@@ -79,7 +85,9 @@ export interface RfqPublishResult {
   rfq_number: string | null;
   status: string | null;
   public_link: string | null;
+  vendors_invited: number | null;
   actions_available: string[];
+  notifications: RfqNotificationCounters;
   already_published: boolean;
   lifecycle_details: Array<{ label: string; value: string }>;
   raw: JsonRecord | null;
@@ -87,9 +95,52 @@ export interface RfqPublishResult {
 
 export interface RfqSendResult {
   rfq_id: string | null;
+  rfq_number: string | null;
   status: string | null;
+  public_link: string | null;
+  vendors_invited: number | null;
+  notifications: RfqNotificationCounters;
   distribution_statuses: RfqDistributionStatus[];
   raw: JsonRecord | null;
+}
+
+export interface RfqDeleteResult {
+  rfq_id: string | null;
+  message: string;
+  raw: JsonRecord | null;
+}
+
+export interface PublicRfqData extends RfqDetailData {
+  deadline_expired: boolean;
+  registration_open: boolean | null;
+  vendors_invited: number | null;
+}
+
+export interface PublicRfqRegistrationPayload {
+  vendor_id?: string;
+  vendor_name?: string;
+  email?: string;
+  phone?: string;
+  company_name?: string;
+  [key: string]: unknown;
+}
+
+export interface PublicRfqRegistrationResult {
+  rfq_id: string | null;
+  vendor_id: string | null;
+  registration_status: string | null;
+  message: string;
+  raw: JsonRecord | null;
+}
+
+export interface VendorPortalOpenRfqItem extends RfqListItem {
+  deadline_expired: boolean;
+  vendors_invited: number | null;
+}
+
+export interface VendorPortalOpenRfqData {
+  count: number;
+  items: VendorPortalOpenRfqItem[];
 }
 
 export class RfqWorkflowApiError extends Error {
@@ -195,6 +246,27 @@ function readPayloadMessage(payload: unknown, status: number): string {
       return payload.detail;
     }
 
+    if (Array.isArray(payload.detail)) {
+      const validationMessage = payload.detail
+        .map((entry) => {
+          if (typeof entry === "string") {
+            return entry;
+          }
+
+          if (isObject(entry) && typeof entry.msg === "string") {
+            return entry.msg;
+          }
+
+          return null;
+        })
+        .filter((entry): entry is string => Boolean(entry))
+        .join("; ");
+
+      if (validationMessage) {
+        return validationMessage;
+      }
+    }
+
     if (typeof payload.message === "string" && payload.message.trim()) {
       return payload.message;
     }
@@ -224,6 +296,91 @@ function parseEnvelopePayload<T>(payload: unknown): ApiEnvelope<T> {
     data: payload as T,
     errors: null,
   };
+}
+
+function extractPayloadData(payload: unknown): unknown {
+  if (isObject(payload) && "data" in payload) {
+    return payload.data;
+  }
+
+  return payload;
+}
+
+function extractMissingFields(payload: unknown): string[] {
+  if (!isObject(payload)) {
+    return [];
+  }
+
+  if (Array.isArray(payload.missing_fields)) {
+    return payload.missing_fields
+      .map((field) => toStringOrNull(field))
+      .filter((field): field is string => Boolean(field));
+  }
+
+  if (isObject(payload.data) && Array.isArray(payload.data.missing_fields)) {
+    return payload.data.missing_fields
+      .map((field) => toStringOrNull(field))
+      .filter((field): field is string => Boolean(field));
+  }
+
+  if (isObject(payload.errors) && Array.isArray(payload.errors.missing_fields)) {
+    return payload.errors.missing_fields
+      .map((field) => toStringOrNull(field))
+      .filter((field): field is string => Boolean(field));
+  }
+
+  return [];
+}
+
+function normalizeNotifications(raw: unknown): RfqNotificationCounters {
+  const source = isObject(raw) ? raw : {};
+
+  return {
+    emails_sent: toNumberOrNull(source.emails_sent),
+    in_app_sent: toNumberOrNull(source.in_app_sent),
+  };
+}
+
+function extractRfqSource(raw: JsonRecord): JsonRecord {
+  if (isObject(raw.rfq)) {
+    return raw.rfq;
+  }
+
+  if (isObject(raw.rfq_workflow)) {
+    return raw.rfq_workflow;
+  }
+
+  return raw;
+}
+
+function extractNotificationsSource(raw: JsonRecord): JsonRecord {
+  if (isObject(raw.notifications)) {
+    return raw.notifications;
+  }
+
+  if (isObject(raw.notification_counts)) {
+    return raw.notification_counts;
+  }
+
+  return raw;
+}
+
+function compactPayload(payload: JsonRecord): JsonRecord {
+  const next: JsonRecord = {};
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+
+    if (typeof value === "string" && !value.trim()) {
+      continue;
+    }
+
+    next[key] = value;
+  }
+
+  return next;
 }
 
 async function parseError(response: Response): Promise<RfqWorkflowApiError> {
@@ -264,14 +421,6 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<Api
   return envelope;
 }
 
-function extractPayloadData(payload: unknown): unknown {
-  if (isObject(payload) && "data" in payload) {
-    return payload.data;
-  }
-
-  return payload;
-}
-
 export function normalizeRfqWorkflowFromUnknown(raw: unknown, fallback: Partial<RfqWorkflow> | null = null): RfqWorkflow | null {
   const source = isObject(raw) ? raw : {};
   const fallbackSource = isObject(fallback) ? fallback : {};
@@ -282,11 +431,15 @@ export function normalizeRfqWorkflowFromUnknown(raw: unknown, fallback: Partial<
   }
 
   const rfq_number = toStringOrNull(source.rfq_number) || toStringOrNull(fallbackSource.rfq_number);
-  const status = toStringOrNull(source.status) || toStringOrNull(fallbackSource.status);
+  const status =
+    toStringOrNull(source.status) ||
+    toStringOrNull(source.rfq_status) ||
+    toStringOrNull(fallbackSource.status);
 
   const actions_available = [
     ...toStringArray(source.actions_available),
     ...toStringArray(source.actionsAvailable),
+    ...toStringArray(source.available_actions),
   ];
 
   const fallbackActions = toStringArray(fallbackSource.actions_available);
@@ -294,6 +447,7 @@ export function normalizeRfqWorkflowFromUnknown(raw: unknown, fallback: Partial<
 
   const public_link =
     toStringOrNull(source.public_link) ||
+    toStringOrNull(source.public_url) ||
     toStringOrNull(source.publicUrl) ||
     toStringOrNull(fallbackSource.public_link) ||
     null;
@@ -342,7 +496,10 @@ function normalizeDistributionStatus(raw: unknown): RfqDistributionStatus | null
   const email = toStringOrNull(raw.email);
   const email_status = toStringOrNull(raw.email_status);
   const portal_notification = toStringOrNull(raw.portal_notification);
-  const sent_at = toStringOrNull(raw.sent_at) || toStringOrNull(raw.created_at) || toStringOrNull(raw.updated_at);
+  const sent_at =
+    toStringOrNull(raw.sent_at) ||
+    toStringOrNull(raw.created_at) ||
+    toStringOrNull(raw.updated_at);
 
   return {
     ...raw,
@@ -360,7 +517,11 @@ function normalizeRfqListItem(raw: unknown, fallbackRfqId: string | null = null)
     return null;
   }
 
-  const rfq_id = toStringOrNull(raw.rfq_id) || fallbackRfqId;
+  const rfq_id =
+    toStringOrNull(raw.rfq_id) ||
+    toStringOrNull(raw.id) ||
+    fallbackRfqId;
+
   if (!rfq_id) {
     return null;
   }
@@ -368,13 +529,19 @@ function normalizeRfqListItem(raw: unknown, fallbackRfqId: string | null = null)
   const actions_available = [
     ...toStringArray(raw.actions_available),
     ...toStringArray(raw.actionsAvailable),
+    ...toStringArray(raw.available_actions),
   ];
+
+  const vendors_invited_count =
+    toNumberOrNull(raw.vendors_invited_count) ??
+    toNumberOrNull(raw.invited_vendors_count) ??
+    toNumberOrNull(raw.vendors_invited);
 
   return {
     ...raw,
     rfq_id,
     rfq_number: toStringOrNull(raw.rfq_number),
-    status: toStringOrNull(raw.status),
+    status: toStringOrNull(raw.status) || toStringOrNull(raw.rfq_status),
     actions_available,
     pr_number: toStringOrNull(raw.pr_number),
     material: toStringOrNull(raw.material),
@@ -382,13 +549,16 @@ function normalizeRfqListItem(raw: unknown, fallbackRfqId: string | null = null)
     quantity: toNumberOrNull(raw.quantity),
     delivery_date: toStringOrNull(raw.delivery_date),
     submission_deadline: toStringOrNull(raw.submission_deadline),
-    vendors_invited_count: toNumberOrNull(raw.vendors_invited_count),
-    last_sent_at: toStringOrNull(raw.last_sent_at),
-    public_link: toStringOrNull(raw.public_link),
+    vendors_invited_count,
+    last_sent_at: toStringOrNull(raw.last_sent_at) || toStringOrNull(raw.sent_at),
+    public_link:
+      toStringOrNull(raw.public_link) ||
+      toStringOrNull(raw.public_url),
     pdf_available: toBooleanOrNull(raw.pdf_available),
     pdf_download_url: toStringOrNull(raw.pdf_download_url),
     created_at: toStringOrNull(raw.created_at),
     updated_at: toStringOrNull(raw.updated_at),
+    deadline_expired: toBooleanOrNull(raw.deadline_expired),
   };
 }
 
@@ -422,20 +592,19 @@ function normalizeRfqListData(raw: unknown): RfqListData {
     .filter((item): item is RfqListItem => Boolean(item));
 
   return {
-    count: toNumberOrNull(raw.count) ?? rfqs.length,
+    count: toNumberOrNull(raw.count) ?? toNumberOrNull(raw.total) ?? rfqs.length,
     rfqs,
   };
 }
 
 function normalizeRfqDetailData(raw: unknown, fallbackRfqId: string): RfqDetailData {
   const source = isObject(raw) ? raw : {};
+  const rfqSource = extractRfqSource(source);
 
-  const mergedSource = isObject(source.rfq)
-    ? ({
-      ...source.rfq,
-      ...source,
-    } as JsonRecord)
-    : source;
+  const mergedSource = {
+    ...rfqSource,
+    ...source,
+  } as JsonRecord;
 
   const base = normalizeRfqListItem(mergedSource, fallbackRfqId);
 
@@ -458,6 +627,7 @@ function normalizeRfqDetailData(raw: unknown, fallbackRfqId: string): RfqDetailD
       pdf_download_url: null,
       created_at: null,
       updated_at: null,
+      deadline_expired: null,
       full_specs: null,
       scope_of_work: null,
       technical_specs: null,
@@ -520,6 +690,8 @@ function extractLifecycleDetails(source: JsonRecord): Array<{ label: string; val
     "transition",
     "published_at",
     "published_by",
+    "opened_at",
+    "opened_by",
   ];
 
   for (const key of directKeys) {
@@ -531,18 +703,20 @@ function extractLifecycleDetails(source: JsonRecord): Array<{ label: string; val
 
 function normalizePublishResult(raw: unknown, alreadyPublished: boolean, currentWorkflow: RfqWorkflow | null = null): RfqPublishResult {
   const source = isObject(raw) ? raw : {};
+  const rfqSource = extractRfqSource(source);
   const fallbackWorkflow = currentWorkflow ?? null;
 
-  const mergedWorkflow = normalizeRfqWorkflowFromUnknown(source.rfq_workflow ?? source, fallbackWorkflow);
+  const mergedWorkflow = normalizeRfqWorkflowFromUnknown(rfqSource, fallbackWorkflow);
 
   const status =
-    toStringOrNull(source.status) ||
+    toStringOrNull(rfqSource.status) ||
     mergedWorkflow?.status ||
     fallbackWorkflow?.status ||
-    (alreadyPublished ? "open" : "draft");
+    (alreadyPublished ? "open_for_bidding" : "published");
 
   const public_link =
-    toStringOrNull(source.public_link) ||
+    toStringOrNull(rfqSource.public_link) ||
+    toStringOrNull(rfqSource.public_url) ||
     mergedWorkflow?.public_link ||
     fallbackWorkflow?.public_link ||
     null;
@@ -552,15 +726,22 @@ function normalizePublishResult(raw: unknown, alreadyPublished: boolean, current
       ? mergedWorkflow.actions_available
       : fallbackWorkflow?.actions_available ?? [];
 
+  const vendors_invited =
+    toNumberOrNull(rfqSource.vendors_invited) ??
+    toNumberOrNull(rfqSource.invited_vendors_count) ??
+    toNumberOrNull(rfqSource.vendors_invited_count);
+
   return {
-    rfq_id: mergedWorkflow?.rfq_id || fallbackWorkflow?.rfq_id || null,
-    rfq_number: mergedWorkflow?.rfq_number || fallbackWorkflow?.rfq_number || null,
+    rfq_id: mergedWorkflow?.rfq_id || toStringOrNull(rfqSource.rfq_id) || fallbackWorkflow?.rfq_id || null,
+    rfq_number: mergedWorkflow?.rfq_number || toStringOrNull(rfqSource.rfq_number) || fallbackWorkflow?.rfq_number || null,
     status,
     public_link,
+    vendors_invited,
     actions_available,
+    notifications: normalizeNotifications(extractNotificationsSource(source)),
     already_published: alreadyPublished,
-    lifecycle_details: extractLifecycleDetails(source),
-    raw: isObject(raw) ? raw : null,
+    lifecycle_details: extractLifecycleDetails({ ...source, ...rfqSource }),
+    raw: source,
   };
 }
 
@@ -612,8 +793,65 @@ function extractDistributionStatuses(raw: unknown): RfqDistributionStatus[] {
     .filter((item): item is RfqDistributionStatus => Boolean(item));
 }
 
+function normalizeActionRfqId(source: JsonRecord, fallbackRfqId: string): string {
+  return toStringOrNull(source.rfq_id) || fallbackRfqId;
+}
+
+function normalizePublicRfqData(raw: unknown, fallbackRfqId: string): PublicRfqData {
+  const source = isObject(raw) ? raw : {};
+  const rfqSource = extractRfqSource(source);
+  const rfqId = toStringOrNull(rfqSource.rfq_id) || fallbackRfqId;
+  const detail = normalizeRfqDetailData(source, rfqId);
+
+  return {
+    ...detail,
+    deadline_expired: toBooleanOrNull(rfqSource.deadline_expired) ?? false,
+    registration_open: toBooleanOrNull(rfqSource.registration_open),
+    vendors_invited:
+      toNumberOrNull(rfqSource.vendors_invited) ??
+      toNumberOrNull(rfqSource.invited_vendors_count) ??
+      detail.vendors_invited_count,
+  };
+}
+
+function normalizeVendorPortalItem(raw: unknown): VendorPortalOpenRfqItem | null {
+  const base = normalizeRfqListItem(raw);
+  if (!base) {
+    return null;
+  }
+
+  return {
+    ...base,
+    deadline_expired: toBooleanOrNull(base.deadline_expired) ?? false,
+    vendors_invited:
+      toNumberOrNull(base.vendors_invited_count) ??
+      toNumberOrNull(base.vendors_invited),
+  };
+}
+
+async function postStatusTransition(path: string, rfqId: string, currentWorkflow: RfqWorkflow | null = null): Promise<RfqPublishResult> {
+  try {
+    const response = await requestJson<unknown>(path, {
+      method: "POST",
+    });
+
+    return normalizePublishResult(response.data, false, currentWorkflow);
+  } catch (error) {
+    if (error instanceof RfqWorkflowApiError && error.status === 409) {
+      return normalizePublishResult(extractPayloadData(error.payload), true, currentWorkflow);
+    }
+
+    throw error;
+  }
+}
+
 export function isRfqOpenStatus(status: string | null | undefined): boolean {
-  return typeof status === "string" && status.trim().toLowerCase() === "open";
+  if (typeof status !== "string") {
+    return false;
+  }
+
+  const normalized = status.trim().toLowerCase();
+  return normalized === "open" || normalized === "open_for_bidding" || normalized === "open for bidding";
 }
 
 export function toRfqStatusLabel(status: string | null | undefined): string {
@@ -622,8 +860,12 @@ export function toRfqStatusLabel(status: string | null | undefined): string {
   }
 
   const normalized = status.trim().toLowerCase();
-  if (normalized === "open") {
+  if (normalized === "open" || normalized === "open_for_bidding" || normalized === "open for bidding") {
     return "Open for Bidding";
+  }
+
+  if (normalized === "published") {
+    return "Published";
   }
 
   if (normalized === "draft") {
@@ -659,6 +901,43 @@ export async function getRfqDetail(rfqId: string): Promise<RfqDetailData> {
   return normalizeRfqDetailData(response.data, rfqId);
 }
 
+export async function createManualRfq(payload: JsonRecord): Promise<RfqDetailData> {
+  const bodyPayload = compactPayload(payload);
+  const response = await requestJson<unknown>(`${API_PREFIX}/rfq/manual`, {
+    method: "POST",
+    body: JSON.stringify(bodyPayload),
+  });
+
+  const source = isObject(response.data) ? response.data : {};
+  const rfqSource = extractRfqSource(source);
+  const rfqId = toStringOrNull(rfqSource.rfq_id) || "manual-rfq";
+  return normalizeRfqDetailData(source, rfqId);
+}
+
+export async function updateRfq(rfqId: string, payload: JsonRecord): Promise<RfqDetailData> {
+  const bodyPayload = compactPayload(payload);
+  const response = await requestJson<unknown>(`${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}`, {
+    method: "PUT",
+    body: JSON.stringify(bodyPayload),
+  });
+
+  return normalizeRfqDetailData(response.data, rfqId);
+}
+
+export async function deleteRfq(rfqId: string): Promise<RfqDeleteResult> {
+  const response = await requestJson<unknown>(`${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}`, {
+    method: "DELETE",
+  });
+
+  const source = isObject(response.data) ? response.data : {};
+
+  return {
+    rfq_id: normalizeActionRfqId(source, rfqId),
+    message: response.message || toStringOrNull(source.message) || "RFQ deleted",
+    raw: source,
+  };
+}
+
 export function getRfqPdfDownloadUrl(rfqId: string, pdfDownloadUrl: string | null | undefined): string {
   const candidate = toStringOrNull(pdfDownloadUrl) || `${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}/pdf`;
   return resolveUrl(candidate) || `${API_BASE_URL}${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}/pdf`;
@@ -674,41 +953,129 @@ export async function getRfqRecommendedVendors(rfqId: string): Promise<RfqRecomm
 }
 
 export async function publishRfq(rfqId: string, currentWorkflow: RfqWorkflow | null = null): Promise<RfqPublishResult> {
-  try {
-    const response = await requestJson<unknown>(`${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}/publish`, {
-      method: "POST",
-    });
+  return postStatusTransition(`${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}/publish`, rfqId, currentWorkflow);
+}
 
-    return normalizePublishResult(response.data, false, currentWorkflow);
+export async function openRfqForBidding(rfqId: string, currentWorkflow: RfqWorkflow | null = null): Promise<RfqPublishResult> {
+  try {
+    return await postStatusTransition(`${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}/open-for-bidding`, rfqId, currentWorkflow);
   } catch (error) {
-    if (error instanceof RfqWorkflowApiError && error.status === 409) {
-      return normalizePublishResult(extractPayloadData(error.payload), true, currentWorkflow);
+    if (error instanceof RfqWorkflowApiError && (error.status === 404 || error.status === 405)) {
+      return postStatusTransition(`${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}/publish`, rfqId, currentWorkflow);
     }
 
     throw error;
   }
 }
 
-export async function sendRfqToVendors(rfqId: string, vendorIds: string[]): Promise<RfqSendResult> {
+export async function sendRfqToVendors(rfqId: string, vendorIds?: string[]): Promise<RfqSendResult> {
+  const normalizedVendorIds = Array.isArray(vendorIds)
+    ? vendorIds.filter((vendorId): vendorId is string => typeof vendorId === "string" && Boolean(vendorId.trim()))
+    : [];
+
+  const body = normalizedVendorIds.length > 0
+    ? JSON.stringify({ vendor_ids: normalizedVendorIds })
+    : undefined;
+
   const response = await requestJson<unknown>(`${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}/send`, {
     method: "POST",
-    body: JSON.stringify({ vendor_ids: vendorIds }),
+    body,
   });
 
   const source = isObject(response.data) ? response.data : {};
-  const statuses = extractDistributionStatuses(source);
+  const rfqSource = extractRfqSource(source);
 
   return {
-    rfq_id: toStringOrNull(source.rfq_id) || rfqId,
-    status: toStringOrNull(source.status),
-    distribution_statuses: statuses,
-    raw: isObject(response.data) ? response.data : null,
+    rfq_id: normalizeActionRfqId(rfqSource, rfqId),
+    rfq_number: toStringOrNull(rfqSource.rfq_number),
+    status: toStringOrNull(rfqSource.status) || toStringOrNull(source.status),
+    public_link: toStringOrNull(rfqSource.public_link) || toStringOrNull(rfqSource.public_url),
+    vendors_invited:
+      toNumberOrNull(rfqSource.vendors_invited) ??
+      toNumberOrNull(rfqSource.invited_vendors_count) ??
+      toNumberOrNull(rfqSource.vendors_invited_count),
+    notifications: normalizeNotifications(extractNotificationsSource(source)),
+    distribution_statuses: extractDistributionStatuses(source),
+    raw: source,
   };
 }
 
 export async function getRfqDistributionHistory(rfqId: string): Promise<RfqDistributionStatus[]> {
   const response = await requestJson<unknown>(`${API_PREFIX}/rfq/${encodeURIComponent(rfqId)}/distributions`);
   return extractDistributionStatuses(response.data);
+}
+
+export async function getPublicRfq(rfqId: string): Promise<PublicRfqData> {
+  const response = await requestJson<unknown>(`${API_PREFIX}/rfq/public/${encodeURIComponent(rfqId)}`);
+  return normalizePublicRfqData(response.data, rfqId);
+}
+
+export async function registerPublicRfqVendor(
+  rfqId: string,
+  payload: PublicRfqRegistrationPayload,
+): Promise<PublicRfqRegistrationResult> {
+  const bodyPayload = compactPayload(payload);
+  const response = await requestJson<unknown>(`${API_PREFIX}/rfq/public/${encodeURIComponent(rfqId)}/register`, {
+    method: "POST",
+    body: JSON.stringify(bodyPayload),
+  });
+
+  const source = isObject(response.data) ? response.data : {};
+  const rfqSource = extractRfqSource(source);
+
+  return {
+    rfq_id: normalizeActionRfqId(rfqSource, rfqId),
+    vendor_id: toStringOrNull(source.vendor_id),
+    registration_status: toStringOrNull(source.registration_status) || toStringOrNull(source.status),
+    message: response.message || toStringOrNull(source.message) || "Registration submitted",
+    raw: source,
+  };
+}
+
+export async function listVendorPortalOpenRfqs(vendorId?: string): Promise<VendorPortalOpenRfqData> {
+  const query = new URLSearchParams();
+  if (vendorId?.trim()) {
+    query.set("vendor_id", vendorId.trim());
+  }
+
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const response = await requestJson<unknown>(`${API_PREFIX}/rfq/vendor-portal/open${suffix}`);
+
+  const source = isObject(response.data) ? response.data : {};
+  const listSource = Array.isArray(source.items)
+    ? source.items
+    : Array.isArray(source.rfqs)
+      ? source.rfqs
+      : Array.isArray(source.open_rfqs)
+        ? source.open_rfqs
+        : Array.isArray(response.data)
+          ? response.data
+          : [];
+
+  const items = listSource
+    .map((item) => normalizeVendorPortalItem(item))
+    .filter((item): item is VendorPortalOpenRfqItem => Boolean(item));
+
+  return {
+    count: toNumberOrNull(source.count) ?? toNumberOrNull(source.total) ?? items.length,
+    items,
+  };
+}
+
+export function getRfqWorkflowApiErrorPayload(error: unknown): unknown {
+  if (error instanceof RfqWorkflowApiError) {
+    return error.payload;
+  }
+
+  return null;
+}
+
+export function getRfqWorkflowMissingFields(error: unknown): string[] {
+  if (!(error instanceof RfqWorkflowApiError)) {
+    return [];
+  }
+
+  return extractMissingFields(error.payload);
 }
 
 export function getRfqWorkflowApiErrorMessage(error: unknown): string {

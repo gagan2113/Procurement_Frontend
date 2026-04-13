@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, FilePlus, CheckSquare, ClipboardList, DollarSign,
   Building2, FileText, BarChart3, Users, ShieldCheck, Package,
-  Truck, Receipt, CreditCard, Bell, Bot
+  Truck, Receipt, CreditCard, Bell, Bot, Globe
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
@@ -22,6 +22,7 @@ const mainNav = [
 const procurementNav = [
   { title: "Vendors", url: "/vendors", icon: Building2 },
   { title: "RFQ / Tenders", url: "/rfq", icon: FileText },
+  { title: "Vendor Portal", url: "/vendor-portal", icon: Globe },
   { title: "Bid Management", url: "/bids", icon: BarChart3 },
   { title: "Vendor Shortlisting", url: "/shortlisting", icon: Users },
   { title: "Approval", url: "/approval", icon: ShieldCheck },

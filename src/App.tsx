@@ -13,6 +13,8 @@ import VendorsPage from "./pages/VendorsPage";
 import VendorDetailPage from "./pages/VendorDetailPage";
 import RFQPage from "./pages/RFQPage";
 import BidsPage from "./pages/BidsPage";
+import VendorPortalPage from "./pages/VendorPortalPage";
+import PublicRfqPage from "./pages/PublicRfqPage";
 import ShortlistingPage from "./pages/ShortlistingPage";
 import ApprovalPage from "./pages/ApprovalPage";
 import PurchaseOrdersPage from "./pages/PurchaseOrdersPage";
@@ -40,6 +42,8 @@ const App = () => (
             <Route path="/vendors" element={<VendorsPage />} />
             <Route path="/vendors/:vendorId" element={<VendorDetailPage />} />
             <Route path="/rfq" element={<RFQPage />} />
+            <Route path="/rfq/public/:rfqId" element={<PublicRfqPage />} />
+            <Route path="/vendor-portal" element={<VendorPortalPage />} />
             <Route path="/bids" element={<BidsPage />} />
             <Route path="/shortlisting" element={<ShortlistingPage />} />
             <Route path="/approval" element={<ApprovalPage />} />
